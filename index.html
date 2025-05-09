@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Pet Feeder Simulator</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1, h2 { color: #5a2a88; }
+        label { display: block; margin-top: 10px; font-weight: bold; }
+        input[type="text"], input[type="number"], select, textarea {
+            width: calc(100% - 22px); padding: 10px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px;
+            box-sizing: border-box;
+        }
+        textarea { height: 80px; }
+        button {
+            background-color: #7B2CBF; color: white; padding: 10px 15px; border: none;
+            border-radius: 4px; cursor: pointer; margin-top: 15px; font-size: 16px;
+        }
+        button:hover { background-color: #5a2a88; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        .section { margin-bottom: 30px; padding-bottom: 20px; border-bottom: 1px solid #eee; }
+        .log-area {
+            background-color: #2d2d2d; color: #9f9; padding: 10px; border-radius: 4px;
+            font-family: monospace; white-space: pre-wrap; word-wrap: break-word;
+            max-height: 200px; overflow-y: auto; margin-top: 10px;
+        }
+        .schedule-item, .command-item {
+            background-color: #e9d8fd; padding: 10px; margin-bottom: 8px; border-radius: 4px;
+            border-left: 5px solid #7B2CBF;
+        }
+        .error { color: red; font-weight: bold; }
+        .config-warning { background-color: #fff3cd; color: #856404; padding: 10px; border-radius: 4px; margin-bottom: 15px; border: 1px solid #ffeeba;}
+    </style>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>ESP32 Pet Feeder Simulator</h1>
+
+        <div class="config-warning">
+            <strong>Important:</strong> This simulator interacts directly with the Firebase database. Firebase test rules may not be properly set if there are permission denied errors.
+            <br><br><strong>Current UID for testing: </strong> UiGUMx8T67c1F2NJe8fRly8eHyP2
+            <br><strong>Email: </strong>hawob13713@exitings.com
+            <br><strong>Password: </strong>Test123@
+        </div>
+
+        <div class="section" id="config-section">
+            <h2>Configuration</h2>
+            <label for="uid">User ID (UID) to Simulate For:</label>
+            <input type="text" id="uid" placeholder="Enter User ID from Firebase Auth">
+            <button onclick="initializeSimulator()">Initialize Simulator & Listen</button>
+            <p id="init-status"></p>
+        </div>
+
+        <div class="section" id="status-section" style="display:none;">
+            <h2>Feeder Status Control</h2>
+            <label for="isOnline">Is Online:</label>
+            <select id="isOnline">
+                <option value="true" selected>Yes</option>
+                <option value="false">No</option>
+            </select>
+
+            <label for="foodLevel">Food Level:</label>
+            <select id="foodLevel">
+                <option value="High">High</option>
+                <option value="Medium" selected>Medium</option>
+                <option value="Low">Low</option>
+                <option value="Empty">Empty</option>
+                <option value="Unknown">Unknown</option>
+            </select>
+
+            <label for="feederError">Feeder Error:</label>
+            <select id="feederError">
+                <option value="None" selected>None</option>
+                <option value="Jam">Jam Detected</option>
+                <option value="Motor Failure">Motor Failure</option>
+                <option value="Low Food">Low Food Warning</option>
+                <option value="Out of Food">Out of Food</option>
+            </select>
+            <button onclick="updateFeederStatus()">Update Feeder Status in DB</button>
+        </div>
+
+        <div class="section" id="commands-section" style="display:none;">
+            <h2>Manual Feed Command Listener</h2>
+            <div id="feedNowCommandArea">No active 'feedNow' command. Waiting...</div>
+        </div>
+
+        <div class="section" id="schedules-section" style="display:none;">
+            <h2>Schedules Listener</h2>
+            <div id="schedulesArea">No schedules loaded yet. Waiting...</div>
+        </div>
+
+        <div class="section">
+            <h2>Simulator Log</h2>
+            <div id="logArea" class="log-area">Simulator log will appear here...</div>
+        </div>
+    </div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyCc7CfbiUP7ivEo4Vrgr-2Gq3i1xmaCrVE",
+            authDomain: "aspetfeeder.firebaseapp.com",
+            projectId: "aspetfeeder",
+            storageBucket: "aspetfeeder.firebasestorage.app",
+            messagingSenderId: "643773212039",
+            appId: "1:643773212039:web:0cd9320984b9a61238df22",
+            measurementId: "G-F387XYVKHB",
+            databaseURL: "https://aspetfeeder-default-rtdb.asia-southeast1.firebasedatabase.app/"
+        };
+
+        let firebaseApp;
+        let db;
+        let currentUID = '';
+        let feedNowListener = null;
+        let schedulesListener = null;
+
+        const logArea = document.getElementById('logArea');
+        const initStatus = document.getElementById('init-status');
+
+        function log(message) {
+            console.log(message);
+            logArea.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}\n` + logArea.innerHTML;
+            if (logArea.children.length > 50) {
+                logArea.removeChild(logArea.lastChild);
+            }
+        }
+
+        function initializeSimulator() {
+            currentUID = document.getElementById('uid').value.trim();
+            if (!currentUID) {
+                alert("Please enter a User ID (UID).");
+                return;
+            }
+
+            if (firebaseConfig.apiKey === "YOUR_API_KEY") {
+                alert("Please update the firebaseConfig in the HTML script tag with your project details!");
+                log("ERROR: Firebase config not set.");
+                initStatus.textContent = "Error: Firebase config missing in script.";
+                initStatus.className = "error";
+                return;
+            }
+
+            try {
+                if (firebaseApp) {
+                    if (feedNowListener && db) db.ref(`users/${feedNowListener.uid}/commands/feedNow`).off('value', feedNowListener.callback);
+                    if (schedulesListener && db) db.ref(`users/${schedulesListener.uid}/schedules`).off('value', schedulesListener.callback);
+                    feedNowListener = null;
+                    schedulesListener = null;
+                    // firebase.app().delete(); // consider if needed for full re-init
+                }
+
+                if (!firebase.apps.length) {
+                    firebaseApp = firebase.initializeApp(firebaseConfig);
+                } else {
+                    firebaseApp = firebase.app();
+                }
+                db = firebase.database();
+                log(`Firebase initialized for UID: ${currentUID}`);
+                initStatus.textContent = `Simulator initialized for UID: ${currentUID}. Listening for commands and schedules.`;
+                initStatus.className = "";
+
+                document.getElementById('status-section').style.display = 'block';
+                document.getElementById('commands-section').style.display = 'block';
+                document.getElementById('schedules-section').style.display = 'block';
+                document.getElementById('config-section').getElementsByTagName('button')[0].textContent = 'Re-initialize with new UID';
+
+
+                listenForFeedNow();
+                listenForSchedules();
+                // fetch initial status to populate form (optional)
+                fetchInitialStatus();
+
+            } catch (error) {
+                log(`Firebase initialization error: ${error.message}`);
+                initStatus.textContent = `Error: ${error.message}`;
+                initStatus.className = "error";
+            }
+        }
+
+        function fetchInitialStatus() {
+            if (!db || !currentUID) return;
+            const statusRef = db.ref(`users/${currentUID}/feederStatus`);
+            statusRef.once('value').then(snapshot => {
+                if (snapshot.exists()) {
+                    const status = snapshot.val();
+                    document.getElementById('isOnline').value = String(status.isOnline || true);
+                    document.getElementById('foodLevel').value = status.foodLevel || 'Medium';
+                    document.getElementById('feederError').value = status.error || 'None';
+                    log("Fetched initial feeder status from DB.");
+                } else {
+                    log("No initial feeder status found in DB. Using defaults.");
+                }
+            }).catch(error => log(`Error fetching initial status: ${error.message}`));
+        }
+
+        function updateFeederStatus() {
+            if (!db || !currentUID) {
+                alert("Simulator not initialized. Please enter UID and initialize.");
+                return;
+            }
+            const isOnline = document.getElementById('isOnline').value === 'true';
+            const foodLevel = document.getElementById('foodLevel').value;
+            const error = document.getElementById('feederError').value;
+
+            const statusRef = db.ref(`users/${currentUID}/feederStatus`);
+            const statusData = {
+                isOnline: isOnline,
+                foodLevel: foodLevel,
+                error: error,
+                // lastFeedTimestamp and lastFeedAmount are updated by feed actions
+            };
+
+            statusRef.once('value').then(snapshot => {
+                const existingStatus = snapshot.val() || {};
+                const finalStatusData = {
+                    ...existingStatus, // keep existing lastFeedTimestamp, lastFeedAmount
+                    ...statusData      // overwrite with new values from form
+                };
+
+                statusRef.update(finalStatusData)
+                    .then(() => log(`Feeder status updated in DB: Online=${isOnline}, Food=${foodLevel}, Error=${error}`))
+                    .catch(err => log(`Error updating feeder status: ${err.message}`));
+            });
+        }
+
+        function listenForFeedNow() {
+            if (!db || !currentUID) return;
+            const commandRef = db.ref(`users/${currentUID}/commands/feedNow`);
+
+            const callback = (snapshot) => {
+                const commandArea = document.getElementById('feedNowCommandArea');
+                if (snapshot.exists()) {
+                    const command = snapshot.val();
+                    log(`Received 'feedNow' command: Amount ${command.amount}g`);
+                    commandArea.innerHTML = `
+                        <div class="command-item">
+                            <strong>New 'feedNow' Command!</strong><br>
+                            Amount: ${command.amount}g<br>
+                            Timestamp: ${new Date(command.timestamp).toLocaleString()}<br>
+                            <button onclick="acknowledgeFeedNow(${command.amount}, ${command.timestamp})">Simulate Feed & Acknowledge</button>
+                        </div>`;
+                } else {
+                    commandArea.innerHTML = "No active 'feedNow' command. Waiting...";
+                }
+            };
+            commandRef.on('value', callback, (error) => {
+                log(`Error listening to feedNow command: ${error.message}`);
+            });
+            feedNowListener = { uid: currentUID, callback: callback };
+        }
+
+        function acknowledgeFeedNow(amount, commandTimestamp) {
+            if (!db || !currentUID) return;
+            log(`Acknowledging 'feedNow' for ${amount}g.`);
+
+            const feedTime = Date.now(); // ESP32 would use its current time
+
+            // 1. Update feederStatus (lastFeed)
+            const statusRef = db.ref(`users/${currentUID}/feederStatus`);
+            statusRef.update({
+                lastFeedTimestamp: feedTime,
+                lastFeedAmount: amount
+            }).then(() => log("Updated feederStatus with last feed info."))
+              .catch(err => log(`Error updating status: ${err.message}`));
+
+            // 2. Add to feedingHistory
+            const historyRef = db.ref(`users/${currentUID}/feedingHistory/${feedTime}`);
+            historyRef.set({
+                amount: amount,
+                type: "manual", 
+                timestamp: feedTime 
+            }).then(() => log("Added entry to feedingHistory."))
+              .catch(err => log(`Error updating history: ${err.message}`));
+
+            // 3. Clear the command
+            const commandRef = db.ref(`users/${currentUID}/commands/feedNow`);
+            commandRef.remove()
+                .then(() => {
+                    log("'feedNow' command cleared from DB.");
+                    document.getElementById('feedNowCommandArea').innerHTML = "No active 'feedNow' command. Waiting...";
+                })
+                .catch(err => log(`Error clearing command: ${err.message}`));
+        }
+
+        function listenForSchedules() {
+            if (!db || !currentUID) return;
+            const schedulesRefPath = `users/${currentUID}/schedules`;
+            const schedulesRef = db.ref(schedulesRefPath);
+
+            const callback = (snapshot) => {
+                const schedulesArea = document.getElementById('schedulesArea');
+                if (snapshot.exists()) {
+                    const schedules = snapshot.val();
+                    let html = '<strong>Current Schedules:</strong><ul>';
+                    Object.values(schedules).forEach(schedule => {
+                        if (schedule && schedule.id) {
+                            html += `<li class="schedule-item">
+                                Time: ${schedule.time}, Weight: ${schedule.weight}g, Active: ${schedule.isOn}
+                                ${schedule.isOn ? `<button onclick="simulateScheduledFeed('${schedule.id}', ${schedule.weight}, '${schedule.time}')">Simulate This Scheduled Feed</button>` : '(Disabled)'}
+                            </li>`;
+                        }
+                    });
+                    html += '</ul>';
+                    schedulesArea.innerHTML = html;
+                    log("Schedules updated/loaded.");
+                } else {
+                    schedulesArea.innerHTML = "No schedules found in DB.";
+                    log("No schedules found in DB for this user.");
+                }
+            };
+            schedulesRef.on('value', callback, (error) => {
+                log(`Error listening to schedules: ${error.message}`);
+                schedulesArea.innerHTML = `<span class="error">Error loading schedules: ${error.message}</span>`;
+            });
+            schedulesListener = { uid: currentUID, callback: callback };
+        }
+
+        function simulateScheduledFeed(scheduleId, weight, timeStr) {
+            if (!db || !currentUID) return;
+            log(`Simulating scheduled feed: ID ${scheduleId}, Weight ${weight}g at ${timeStr}.`);
+
+            const feedTime = Date.now(); // ESP32 would use its current time
+
+            // 1. Update feederStatus (lastFeed)
+            const statusRef = db.ref(`users/${currentUID}/feederStatus`);
+            statusRef.update({
+                lastFeedTimestamp: feedTime,
+                lastFeedAmount: weight
+            }).then(() => log("Updated feederStatus with last feed info for scheduled feed."))
+              .catch(err => log(`Error updating status for scheduled feed: ${err.message}`));
+
+            // 2. Add to feedingHistory
+            const historyRef = db.ref(`users/${currentUID}/feedingHistory/${feedTime}`);
+            historyRef.set({
+                amount: weight,
+                type: "scheduled",
+                timestamp: feedTime,
+                scheduleId: scheduleId
+            }).then(() => log("Added entry to feedingHistory for scheduled feed."))
+              .catch(err => log(`Error updating history for scheduled feed: ${err.message}`));
+
+            // Note: don't clear the schedule itself, as it's recurring.
+            // The ESP32 would just note it has performed this instance of the schedule.
+            alert(`Simulated feed for schedule ${timeStr} (${weight}g). Check your app!`);
+        }
+
+        window.addEventListener('beforeunload', () => {
+            if (db) {
+                if (feedNowListener) db.ref(`users/${feedNowListener.uid}/commands/feedNow`).off('value', feedNowListener.callback);
+                if (schedulesListener) db.ref(`users/${schedulesListener.uid}/schedules`).off('value', schedulesListener.callback);
+                log("Detached Firebase listeners.");
+            }
+        });
+
+    </script>
+</body>
+</html>
