@@ -1,10 +1,10 @@
 # ESP32 Pet Feeder Firebase Simulator
 
-**Version:** 1.0
+**Version:** 2.0
 
-**Date:** May 9, 2025
+**Date:** May 10, 2025
 
-**Target Application Code Version:** Designed for use with `app/petfeeder/index.tsx` as of version 8.2
+**Target Application Code Version:** Designed for use with `app/petfeeder/index.tsx` as of version 9.
 
 ## Temporary Firebase Security Rules for Testing
 
@@ -15,9 +15,12 @@
   "rules": {
     "users": {
       "$uid": {
-        // .read and .write are the original rules
         ".read": "auth != null && auth.uid === $uid",
         ".write": "auth != null && auth.uid === $uid",
+        "feederConfig": {
+          ".read": true,
+          ".write": true
+        },
         "feederStatus": {
           ".read": true,
           ".write": true
