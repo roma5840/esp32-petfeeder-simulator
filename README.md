@@ -4,7 +4,7 @@
 
 **Date:** May 10, 2025
 
-**Target Application Code Version:** Designed for use with `app/petfeeder/index.tsx` as of version 9.
+**Target Application Code Version:** Designed for use with `app/petfeeder/index.tsx` as of version 10.
 
 ## Temporary Firebase Security Rules for Testing
 
@@ -39,6 +39,21 @@
           ".read": true,
           ".write": "auth != null && auth.uid === $uid"
         }
+      }
+    }
+  }
+}
+```
+
+## Original Rules
+
+```json
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
       }
     }
   }
